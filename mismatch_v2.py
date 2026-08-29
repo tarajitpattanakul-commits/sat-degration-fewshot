@@ -1,25 +1,3 @@
-"""
-Compounding Effects of Label Scarcity and Raw-Sensor Degradation
-on Lightweight Satellite Image Classifiers
-------------------------------------------------------------------
-v3 - adds multi-seed runs (5 seeds per combo, uniform) with mean/std
-aggregation, PLUS incremental CSV saving so a Colab disconnect
-doesn't lose completed runs.
-
-Run this in Google Colab (free GPU) - not locally unless you have
-a GPU and the packages below installed.
-
-Colab setup (first cell):
-    !pip install torch torchvision timm scikit-learn
-
-WARNING: full grid at 5 seeds/combo is expected to take ~3.5-4 hours
-on CPU (full-data runs alone: ~12.7 min x 3 degradation levels x
-5 seeds = ~3.2 hours). Consider:
-  - Running in chunks (see RESUME section below)
-  - Using a Colab GPU runtime instead of CPU to speed this up a lot
-  - Checking Colab's idle-disconnect settings before a long run
-"""
-
 import os
 import csv
 import time
@@ -36,9 +14,6 @@ from collections import defaultdict
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
-# ------------------------------------------------------------------
-# 1. DATASET: EuroSAT
-# ------------------------------------------------------------------
 def load_eurosat(image_size=64, normalize=False):
     tfms = [T.Resize((image_size, image_size)), T.ToTensor()]
     if normalize:
@@ -63,9 +38,6 @@ MODEL_CONFIG = {
     "vit":        {"image_size": 224, "normalize": True,  "pretrained": True},
 }
 
-# ------------------------------------------------------------------
-# 2. DEGRADATION SIMULATION
-# ------------------------------------------------------------------
 class DegradeTransform:
     """Applies sensor-noise-like degradation to a tensor image.
     Assumes input is still in [0,1] range - apply BEFORE normalization."""
@@ -91,16 +63,10 @@ class DegradeTransform:
         levels = 2 ** bit_depth
         img = torch.round(img * (levels - 1)) / (levels - 1)
 
-        # TODO: add "skip atmospheric correction" effect - see paper #7
-        # for how they modeled this on real PAN/XS products.
-
         return img
 
 
 def make_degraded_dataset(base_dataset, level, normalize_after=None):
-    """level can be 'none'/'moderate'/'severe' (fixed) or 'mixed' (randomly
-    picks none/moderate/severe PER IMAGE, PER EPOCH - simulates training on
-    a realistic mix of conditions as a mismatch-mitigation strategy)."""
     class Wrapped(Dataset):
         def __init__(self, base, level, normalize_after):
             self.base = base
@@ -125,13 +91,7 @@ def make_degraded_dataset(base_dataset, level, normalize_after=None):
 
     return Wrapped(base_dataset, level, normalize_after)
 
-
-# ------------------------------------------------------------------
-# 3. FEW-SHOT SAMPLING
-# ------------------------------------------------------------------
 def make_few_shot_subset(dataset, n_per_class, seed):
-    """Returns a Subset with exactly n_per_class examples per class.
-    Use n_per_class=None for the full dataset (seed unused in that case)."""
     if n_per_class is None:
         return dataset
 
@@ -148,12 +108,7 @@ def make_few_shot_subset(dataset, n_per_class, seed):
 
     return Subset(dataset, selected)
 
-
-# ------------------------------------------------------------------
-# 4. MODELS
-# ------------------------------------------------------------------
 class SimpleCNN(nn.Module):
-    """Expects 64x64 input."""
     def __init__(self, num_classes=10):
         super().__init__()
         self.features = nn.Sequential(
@@ -187,15 +142,8 @@ def get_model(name, num_classes=10):
 
 
 def get_lr(model_name):
-    """From-scratch model uses standard training LR; pretrained models use a
-    lower fine-tuning LR to avoid disrupting pretrained features (fixes the
-    LR confound flagged in review)."""
     return 1e-3 if model_name == "small_cnn" else 1e-4
 
-
-# ------------------------------------------------------------------
-# 5. TRAIN / EVAL LOOP
-# ------------------------------------------------------------------
 def epochs_for_shot_count(n_shot):
     if n_shot in (5, 10):
         return 50
@@ -259,11 +207,6 @@ def train_and_eval(model, train_loader, test_loader, epochs, lr=1e-3):
     }
 
 
-# ------------------------------------------------------------------
-# MISMATCH ABLATION V2: fixes power (10 seeds), adds severity gradient
-# (moderate train/test), and adds a mitigation condition ("mixed" training
-# - random degradation level per image per epoch).
-# ------------------------------------------------------------------
 V2_MODELS = ["small_cnn", "mobilenet", "vit"]
 V2_SHOTS = [5, None]  # the two extremes anchoring the mismatch claim; NOT
                        # expanded to 10/50-shot in this round - see paper's
@@ -299,11 +242,6 @@ def open_resumable_csv(path, fieldnames):
 
 
 def run_mismatch_v2():
-    """For each (model, shots, train_degradation, seed): train once, then
-    evaluate on ALL THREE test-degradation conditions (cheap - just extra
-    forward passes). train_degradation='mixed' is the mitigation condition:
-    each training image gets a randomly assigned degradation level every
-    time it's loaded, simulating training on a realistic mix of conditions."""
     print("=" * 60)
     print("MISMATCH ABLATION V2: 10 seeds, severity gradient, mitigation test")
     print("=" * 60)
@@ -371,8 +309,4 @@ def run_mismatch_v2():
 
 
 if __name__ == "__main__":
-    # TIP: if you need to stop partway through (e.g. Colab timeout risk),
-    # just interrupt the cell. Rerunning will automatically SKIP any
-    # combo already saved in results_mismatch_v2.csv and pick up where it
-    # left off.
     run_mismatch_v2()
