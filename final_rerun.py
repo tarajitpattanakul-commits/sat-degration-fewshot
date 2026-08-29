@@ -1,25 +1,3 @@
-"""
-Compounding Effects of Label Scarcity and Raw-Sensor Degradation
-on Lightweight Satellite Image Classifiers
-------------------------------------------------------------------
-v3 - adds multi-seed runs (5 seeds per combo, uniform) with mean/std
-aggregation, PLUS incremental CSV saving so a Colab disconnect
-doesn't lose completed runs.
-
-Run this in Google Colab (free GPU) - not locally unless you have
-a GPU and the packages below installed.
-
-Colab setup (first cell):
-    !pip install torch torchvision timm scikit-learn
-
-WARNING: full grid at 5 seeds/combo is expected to take ~3.5-4 hours
-on CPU (full-data runs alone: ~12.7 min x 3 degradation levels x
-5 seeds = ~3.2 hours). Consider:
-  - Running in chunks (see RESUME section below)
-  - Using a Colab GPU runtime instead of CPU to speed this up a lot
-  - Checking Colab's idle-disconnect settings before a long run
-"""
-
 import os
 import csv
 import time
@@ -36,9 +14,6 @@ from collections import defaultdict
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
-# ------------------------------------------------------------------
-# 1. DATASET: EuroSAT
-# ------------------------------------------------------------------
 def load_eurosat(image_size=64, normalize=False):
     tfms = [T.Resize((image_size, image_size)), T.ToTensor()]
     if normalize:
@@ -63,12 +38,7 @@ MODEL_CONFIG = {
     "vit":        {"image_size": 224, "normalize": True,  "pretrained": True},
 }
 
-# ------------------------------------------------------------------
-# 2. DEGRADATION SIMULATION
-# ------------------------------------------------------------------
 class DegradeTransform:
-    """Applies sensor-noise-like degradation to a tensor image.
-    Assumes input is still in [0,1] range - apply BEFORE normalization."""
 
     def __init__(self, level="none"):
         assert level in ("none", "moderate", "severe")
@@ -90,9 +60,6 @@ class DegradeTransform:
 
         levels = 2 ** bit_depth
         img = torch.round(img * (levels - 1)) / (levels - 1)
-
-        # TODO: add "skip atmospheric correction" effect - see paper #7
-        # for how they modeled this on real PAN/XS products.
 
         return img
 
@@ -118,10 +85,6 @@ def make_degraded_dataset(base_dataset, level, normalize_after=None):
 
     return Wrapped(base_dataset, level, normalize_after)
 
-
-# ------------------------------------------------------------------
-# 3. FEW-SHOT SAMPLING
-# ------------------------------------------------------------------
 def make_few_shot_subset(dataset, n_per_class, seed):
     """Returns a Subset with exactly n_per_class examples per class.
     Use n_per_class=None for the full dataset (seed unused in that case)."""
@@ -141,12 +104,7 @@ def make_few_shot_subset(dataset, n_per_class, seed):
 
     return Subset(dataset, selected)
 
-
-# ------------------------------------------------------------------
-# 4. MODELS
-# ------------------------------------------------------------------
 class SimpleCNN(nn.Module):
-    """Expects 64x64 input."""
     def __init__(self, num_classes=10):
         super().__init__()
         self.features = nn.Sequential(
@@ -180,15 +138,8 @@ def get_model(name, num_classes=10):
 
 
 def get_lr(model_name):
-    """From-scratch model uses standard training LR; pretrained models use a
-    lower fine-tuning LR to avoid disrupting pretrained features (fixes the
-    LR confound flagged in review)."""
     return 1e-3 if model_name == "small_cnn" else 1e-4
 
-
-# ------------------------------------------------------------------
-# 5. TRAIN / EVAL LOOP
-# ------------------------------------------------------------------
 def epochs_for_shot_count(n_shot):
     if n_shot in (5, 10):
         return 50
@@ -251,19 +202,6 @@ def train_and_eval(model, train_loader, test_loader, epochs, lr=1e-3):
         "num_params": num_params,
     }
 
-
-# ------------------------------------------------------------------
-# 6. MULTI-SEED EXPERIMENT GRID
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# FINAL CLEAN RERUN: mobilenet + vit at correct fine-tuning LR (1e-4),
-# across ALL shot counts and degradation levels, matching SimpleCNN's
-# rigor (10 seeds) so Table I is internally consistent. This REPLACES
-# the original lr=1e-3 mobilenet/vit results, which were confounded by
-# an inappropriately high fine-tuning LR (confirmed via Track A/B: ViT
-# 5-shot clean accuracy alone jumped from 43.6% to 74.9% under the
-# correct LR - not a minor effect).
-# ------------------------------------------------------------------
 FINAL_MODELS = ["mobilenet", "vit"]
 FINAL_SHOTS = [5, 10, 50, None]  # None = full dataset
 FINAL_DEGRADATION = ["none", "moderate", "severe"]
@@ -271,12 +209,10 @@ FINAL_SEEDS = [42, 123, 7, 2024, 99, 17, 256, 512, 88, 314]  # 10 seeds, matches
 
 FINAL_CSV = "/content/drive/MyDrive/results_mobilenet_vit_final.csv"
 
-
 def set_all_seeds(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
 
 def run_final_rerun():
     print("=" * 60)
@@ -350,8 +286,4 @@ def run_final_rerun():
 
 
 if __name__ == "__main__":
-    # TIP: if you need to stop partway through (e.g. Colab timeout risk),
-    # just interrupt the cell. Rerunning will automatically SKIP any
-    # combo already saved in results_mobilenet_vit_final.csv and pick up
-    # where it left off.
     run_final_rerun()
