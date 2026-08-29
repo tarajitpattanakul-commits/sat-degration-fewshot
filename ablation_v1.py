@@ -1,25 +1,3 @@
-"""
-Compounding Effects of Label Scarcity and Raw-Sensor Degradation
-on Lightweight Satellite Image Classifiers
-------------------------------------------------------------------
-v3 - adds multi-seed runs (5 seeds per combo, uniform) with mean/std
-aggregation, PLUS incremental CSV saving so a Colab disconnect
-doesn't lose completed runs.
-
-Run this in Google Colab (free GPU) - not locally unless you have
-a GPU and the packages below installed.
-
-Colab setup (first cell):
-    !pip install torch torchvision timm scikit-learn
-
-WARNING: full grid at 5 seeds/combo is expected to take ~3.5-4 hours
-on CPU (full-data runs alone: ~12.7 min x 3 degradation levels x
-5 seeds = ~3.2 hours). Consider:
-  - Running in chunks (see RESUME section below)
-  - Using a Colab GPU runtime instead of CPU to speed this up a lot
-  - Checking Colab's idle-disconnect settings before a long run
-"""
-
 import os
 import csv
 import time
@@ -36,9 +14,6 @@ from collections import defaultdict
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
-# ------------------------------------------------------------------
-# 1. DATASET: EuroSAT
-# ------------------------------------------------------------------
 def load_eurosat(image_size=64, normalize=False):
     tfms = [T.Resize((image_size, image_size)), T.ToTensor()]
     if normalize:
@@ -63,9 +38,6 @@ MODEL_CONFIG = {
     "vit":        {"image_size": 224, "normalize": True,  "pretrained": True},
 }
 
-# ------------------------------------------------------------------
-# 2. DEGRADATION SIMULATION
-# ------------------------------------------------------------------
 class DegradeTransform:
     """Applies sensor-noise-like degradation to a tensor image.
     Assumes input is still in [0,1] range - apply BEFORE normalization."""
@@ -91,9 +63,6 @@ class DegradeTransform:
         levels = 2 ** bit_depth
         img = torch.round(img * (levels - 1)) / (levels - 1)
 
-        # TODO: add "skip atmospheric correction" effect - see paper #7
-        # for how they modeled this on real PAN/XS products.
-
         return img
 
 
@@ -118,13 +87,7 @@ def make_degraded_dataset(base_dataset, level, normalize_after=None):
 
     return Wrapped(base_dataset, level, normalize_after)
 
-
-# ------------------------------------------------------------------
-# 3. FEW-SHOT SAMPLING
-# ------------------------------------------------------------------
 def make_few_shot_subset(dataset, n_per_class, seed):
-    """Returns a Subset with exactly n_per_class examples per class.
-    Use n_per_class=None for the full dataset (seed unused in that case)."""
     if n_per_class is None:
         return dataset
 
@@ -141,12 +104,7 @@ def make_few_shot_subset(dataset, n_per_class, seed):
 
     return Subset(dataset, selected)
 
-
-# ------------------------------------------------------------------
-# 4. MODELS
-# ------------------------------------------------------------------
 class SimpleCNN(nn.Module):
-    """Expects 64x64 input."""
     def __init__(self, num_classes=10):
         super().__init__()
         self.features = nn.Sequential(
@@ -180,15 +138,8 @@ def get_model(name, num_classes=10):
 
 
 def get_lr(model_name):
-    """From-scratch model uses standard training LR; pretrained models use a
-    lower fine-tuning LR to avoid disrupting pretrained features (fixes the
-    LR confound flagged in review)."""
     return 1e-3 if model_name == "small_cnn" else 1e-4
 
-
-# ------------------------------------------------------------------
-# 5. TRAIN / EVAL LOOP
-# ------------------------------------------------------------------
 def epochs_for_shot_count(n_shot):
     if n_shot in (5, 10):
         return 50
@@ -196,7 +147,6 @@ def epochs_for_shot_count(n_shot):
         return 30
     else:
         return 15
-
 
 def train_model(model, train_loader, epochs, lr):
     model = model.to(DEVICE)
@@ -251,13 +201,6 @@ def train_and_eval(model, train_loader, test_loader, epochs, lr=1e-3):
         "num_params": num_params,
     }
 
-
-# ------------------------------------------------------------------
-# 6. MULTI-SEED EXPERIMENT GRID
-# ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# 6A. TRACK A: LR-TUNED RERUN (mobilenet + vit only, 50-shot + full-data)
-# ------------------------------------------------------------------
 TRACK_A_MODELS = ["mobilenet", "vit"]
 TRACK_A_SHOTS = [50, None]  # None = full dataset
 TRACK_A_DEGRADATION = ["none", "moderate", "severe"]
@@ -265,9 +208,6 @@ TRACK_A_SEEDS = [42, 123, 7, 2024, 99]  # 5 seeds
 
 TRACK_A_CSV = "/content/drive/MyDrive/results_track_a_lr_tuned.csv"
 
-# ------------------------------------------------------------------
-# 6B. TRACK B: TRAIN/TEST DEGRADATION DECOUPLING ABLATION
-# ------------------------------------------------------------------
 TRACK_B_MODELS = ["small_cnn", "mobilenet", "vit"]
 TRACK_B_SHOTS = [5, None]  # the two extremes anchoring the floor-effect claim
 TRACK_B_TRAIN_DEGRADATION = ["none", "severe"]  # skip moderate for this ablation
@@ -284,8 +224,6 @@ def set_all_seeds(seed):
 
 
 def open_resumable_csv(path, fieldnames):
-    """Opens a CSV in append mode, writing the header if new, and returns
-    (file_handle, writer, set_of_already_done_keys) for resume support."""
     write_header = not os.path.exists(path)
     f = open(path, "a", newline="")
     writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -304,10 +242,6 @@ def open_resumable_csv(path, fieldnames):
 
 
 def run_track_a():
-    """Re-runs mobilenet + vit at 50-shot/full-data with a proper fine-tuning
-    LR (1e-4 instead of 1e-3), to check whether the original LR=1e-3 results
-    were a fine-tuning-quality confound rather than a genuine architecture
-    difference."""
     print("=" * 60)
     print("TRACK A: LR-tuned rerun (mobilenet, vit @ lr=1e-4)")
     print("=" * 60)
@@ -364,10 +298,6 @@ def run_track_a():
 
 
 def run_track_b():
-    """Trains models under one degradation condition, then evaluates each
-    trained model on BOTH test-degradation conditions (not just the matching
-    one). This separates train-time vs. test-time contributions to the floor
-    effect - the original study only ever tested the matched diagonal."""
     print("=" * 60)
     print("TRACK B: Train/test degradation decoupling ablation")
     print("=" * 60)
@@ -393,8 +323,6 @@ def run_track_b():
                 for seed in TRACK_B_SEEDS:
                     shots_label = n_shot if n_shot else "full"
 
-                    # Check which test-degradation evals are still needed for
-                    # this trained model (supports partial resume mid-model).
                     needed_test_degs = [
                         td for td in TRACK_B_TEST_DEGRADATION
                         if (model_name, str(shots_label), train_deg, td, str(seed), str(lr)) not in already_done
@@ -416,8 +344,6 @@ def run_track_b():
                     epochs = epochs_for_shot_count(n_shot)
                     trained_model, train_time, num_params = train_model(model_obj, train_loader, epochs, lr)
 
-                    # Evaluate the SAME trained model on each needed test-degradation
-                    # condition - this is the cheap part, just a forward pass.
                     for test_deg in needed_test_degs:
                         test_degraded = make_degraded_dataset(test_base, test_deg, normalize_after)
                         test_loader = DataLoader(test_degraded, batch_size=64, **loader_kwargs)
@@ -439,8 +365,5 @@ def run_track_b():
 
 
 if __name__ == "__main__":
-    # TIP: if you need to stop partway through (e.g. Colab timeout risk),
-    # just interrupt the cell. Rerunning will automatically SKIP any
-    # combo already saved in the respective CSV, and pick up where it left off.
     run_track_a()
     run_track_b()
