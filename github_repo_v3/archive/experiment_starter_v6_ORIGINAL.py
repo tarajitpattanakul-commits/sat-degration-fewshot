@@ -1,25 +1,3 @@
-"""
-Compounding Effects of Label Scarcity and Raw-Sensor Degradation
-on Lightweight Satellite Image Classifiers
-------------------------------------------------------------------
-v3 - adds multi-seed runs (5 seeds per combo, uniform) with mean/std
-aggregation, PLUS incremental CSV saving so a Colab disconnect
-doesn't lose completed runs.
-
-Run this in Google Colab (free GPU) - not locally unless you have
-a GPU and the packages below installed.
-
-Colab setup (first cell):
-    !pip install torch torchvision timm scikit-learn
-
-WARNING: full grid at 5 seeds/combo is expected to take ~3.5-4 hours
-on CPU (full-data runs alone: ~12.7 min x 3 degradation levels x
-5 seeds = ~3.2 hours). Consider:
-  - Running in chunks (see RESUME section below)
-  - Using a Colab GPU runtime instead of CPU to speed this up a lot
-  - Checking Colab's idle-disconnect settings before a long run
-"""
-
 import os
 import csv
 import time
@@ -36,9 +14,6 @@ from collections import defaultdict
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
-# ------------------------------------------------------------------
-# 1. DATASET: EuroSAT
-# ------------------------------------------------------------------
 def load_eurosat(image_size=64, normalize=False):
     tfms = [T.Resize((image_size, image_size)), T.ToTensor()]
     if normalize:
@@ -63,9 +38,6 @@ MODEL_CONFIG = {
     "vit":        {"image_size": 224, "normalize": True,  "pretrained": True},
 }
 
-# ------------------------------------------------------------------
-# 2. DEGRADATION SIMULATION
-# ------------------------------------------------------------------
 class DegradeTransform:
     """Applies sensor-noise-like degradation to a tensor image.
     Assumes input is still in [0,1] range - apply BEFORE normalization."""
@@ -118,10 +90,6 @@ def make_degraded_dataset(base_dataset, level, normalize_after=None):
 
     return Wrapped(base_dataset, level, normalize_after)
 
-
-# ------------------------------------------------------------------
-# 3. FEW-SHOT SAMPLING
-# ------------------------------------------------------------------
 def make_few_shot_subset(dataset, n_per_class, seed):
     """Returns a Subset with exactly n_per_class examples per class.
     Use n_per_class=None for the full dataset (seed unused in that case)."""
@@ -141,10 +109,6 @@ def make_few_shot_subset(dataset, n_per_class, seed):
 
     return Subset(dataset, selected)
 
-
-# ------------------------------------------------------------------
-# 4. MODELS
-# ------------------------------------------------------------------
 class SimpleCNN(nn.Module):
     """Expects 64x64 input."""
     def __init__(self, num_classes=10):
@@ -179,9 +143,6 @@ def get_model(name, num_classes=10):
         raise ValueError(f"Unknown model: {name}")
 
 
-# ------------------------------------------------------------------
-# 5. TRAIN / EVAL LOOP
-# ------------------------------------------------------------------
 def epochs_for_shot_count(n_shot):
     if n_shot in (5, 10):
         return 50
@@ -242,9 +203,6 @@ def train_and_eval(model, train_loader, test_loader, epochs, lr=1e-3):
     }
 
 
-# ------------------------------------------------------------------
-# 6. MULTI-SEED EXPERIMENT GRID
-# ------------------------------------------------------------------
 MODELS = ["small_cnn", "mobilenet", "vit"]
 LABEL_COUNTS = [5, 10, 50, None]  # None = full dataset
 DEGRADATION_LEVELS = ["none", "moderate", "severe"]
@@ -275,9 +233,6 @@ def run_full_grid():
         raw_writer.writeheader()
         raw_file.flush()
 
-    # RESUME support: if results_raw.csv already has rows for a given
-    # (model, shots, degradation, seed), skip re-running it. Useful if
-    # a previous run got cut off partway through.
     already_done = set()
     if os.path.exists(RAW_CSV):
         with open(RAW_CSV, "r") as f:
@@ -290,10 +245,6 @@ def run_full_grid():
         cfg = MODEL_CONFIG[model_name]
         base_dataset = load_eurosat(image_size=cfg["image_size"], normalize=False)
 
-        # Train/test split done ONCE per model (not per seed) - the split
-        # itself uses a fixed seed so it's identical across all runs for
-        # this model, keeping comparisons fair. Only the FEW-SHOT SAMPLING
-        # and MODEL INIT vary per seed.
         train_size = int(0.8 * len(base_dataset))
         test_size = len(base_dataset) - train_size
         train_base, test_base = random_split(
@@ -320,14 +271,8 @@ def run_full_grid():
                     train_degraded = make_degraded_dataset(train_base, degradation, normalize_after)
                     test_degraded = make_degraded_dataset(test_base, degradation, normalize_after)
 
-                    # Few-shot sampling uses the seed too, so different
-                    # seeds pick different examples, not just different
-                    # weight inits.
                     train_subset = make_few_shot_subset(train_degraded, n_shot, seed)
 
-                    # num_workers parallelizes CPU-side image loading/degradation
-                    # so the GPU isn't left waiting on a single-threaded pipeline.
-                    # pin_memory speeds up the CPU->GPU transfer when on CUDA.
                     loader_kwargs = dict(
                         num_workers=2,
                         pin_memory=(DEVICE == "cuda"),
@@ -349,7 +294,6 @@ def run_full_grid():
                     }
                     raw_results.append(row)
 
-                    # Write + flush immediately - this is the crash safety net.
                     raw_writer.writerow(row)
                     raw_file.flush()
 
@@ -363,7 +307,6 @@ def run_full_grid():
 
 
 def summarize_results():
-    """Reads the raw CSV and computes mean +/- std per (model, shots, degradation)."""
     grouped = defaultdict(lambda: {"acc": [], "f1": []})
 
     with open(RAW_CSV, "r") as f:
@@ -394,8 +337,4 @@ def summarize_results():
 
 
 if __name__ == "__main__":
-    # TIP: if you need to stop partway through (e.g. Colab timeout risk),
-    # just interrupt the cell. Rerunning run_full_grid() will automatically
-    # SKIP any (model, shots, degradation, seed) combo already saved in
-    # results_raw.csv, and pick up where it left off.
     run_full_grid()
